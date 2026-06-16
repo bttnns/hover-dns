@@ -1,0 +1,9 @@
+{
+  "username": "you@example.com",
+  "password": "yourpassword",
+  "totp_secret": "YOURBASE32SECRET",
+
+  "domain": "example.com",
+  "record_names": ["@", "home"],
+  "interval": 46800
+}
