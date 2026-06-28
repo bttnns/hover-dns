@@ -7,8 +7,9 @@ A lightweight CLI and DDNS daemon for managing DNS records on [Hover](https://ww
 ## What it does
 
 - **Manage records** from the CLI: list, add, set, and delete records across all your Hover domains
-- **DDNS mode**: runs as a daemon, watches one or more record names, and automatically updates them to your current external IP on a configurable interval. Any non-A record (CNAME, TXT, MX, etc.) will be deleted and recreated as an A record on first update.
-- **HTTP API**: `serve` runs the DDNS daemon together with a small, key-authenticated HTTP API for listing, creating, updating, and deleting records (see [HTTP API](#http-api-serve-mode))
+- **Daemon** (`serve`): one long-running process that runs two independent services, each toggled in the config file (both default off):
+  - **DDNS**: watches one or more record names and automatically updates them to your current external IP on a configurable interval. Any non-A record (CNAME, TXT, MX, etc.) will be deleted and recreated as an A record on first update.
+  - **HTTP API**: a small, key-authenticated API for listing, creating, updating, and deleting records (see [HTTP API](#http-api))
 - Generates TOTP codes from your 2FA secret automatically, no manual code entry
 
 ---
@@ -29,23 +30,26 @@ cd hover-dns
 make build
 ```
 
-### Install: Docker (DDNS daemon)
+### Install: Docker (daemon)
 
 ```bash
 git clone https://github.com/bttnns/hover-dns.git
 cd hover-dns
-cp config.example.json config.json   # fill in credentials and record config
+cp config.example.yaml config.yaml   # fill in credentials, enable ddns and/or api
 docker build -t hover-dns .
 docker run -d --name hover-dns --restart unless-stopped \
-  -v ./config.json:/config.json hover-dns ddns
+  -e HOVER_API_KEY="$(openssl rand -hex 32)" \
+  -v ./config.yaml:/config.yaml hover-dns serve
 docker logs -f hover-dns
 ```
+
+(`HOVER_API_KEY` is only needed if you enable the `api` service.)
 
 ### Setup
 
 ```bash
 # Copy and fill in your config
-cp config.example.json config.json
+cp config.example.yaml config.yaml
 
 # Check your external IP (no config needed)
 hover-dns ip
@@ -59,38 +63,51 @@ hover-dns list example.com
 # Update a record manually
 hover-dns set example.com @ 1.2.3.4
 
-# Run the DDNS daemon (domain, record_names, interval read from config.json)
-hover-dns ddns
+# Run the daemon (which services run is set in config.yaml; see below)
+hover-dns serve
 ```
 
 ---
 
 ## Configuration
 
-Copy `config.example.json` to `config.json` and fill in your values:
+Copy `config.example.yaml` to `config.yaml` and fill in your values:
 
-```json
-{
-  "username": "you@example.com",
-  "password": "yourpassword",
-  "totp_secret": "YOURBASE32SECRET",
+```yaml
+username: you@example.com
+password: yourpassword
+totp_secret: YOURBASE32SECRET
 
-  "domain": "example.com",
-  "record_names": ["@", "home"],
-  "interval": 46800
-}
+ddns:
+  enabled: true
+  domain: example.com
+  record_names: ["@", "home"]
+  interval: 46800
+
+api:
+  enabled: true
+  listen: 127.0.0.1:8088
 ```
+
+Top-level credentials are shared by everything. The `ddns` and `api` blocks each
+configure one service of the `serve` daemon, and **each is disabled by default**:
+a config with neither `enabled: true` causes `serve` to print a message and exit.
 
 | Field | Required | Description |
 |-------|----------|-------------|
 | `username` | always | Hover account email |
 | `password` | always | Hover account password |
 | `totp_secret` | if 2FA enabled | Base32 TOTP secret from your authenticator app |
-| `domain` | ddns only | Domain name to watch (e.g. `example.com`) |
-| `record_names` | ddns only | DNS hostnames to keep updated (`@` = apex, `home` = `home.example.com`) |
-| `interval` | ddns only | Poll interval in seconds (default: 46800 = 13 hours) |
+| `ddns.enabled` | - | Run the DDNS loop (default `false`) |
+| `ddns.domain` | if ddns enabled | Domain name to watch (e.g. `example.com`) |
+| `ddns.record_names` | if ddns enabled | DNS hostnames to keep updated (`@` = apex, `home` = `home.example.com`) |
+| `ddns.interval` | - | Poll interval in seconds (default: 46800 = 13 hours) |
+| `api.enabled` | - | Run the HTTP API (default `false`) |
+| `api.listen` | - | API listen address (default `127.0.0.1:8088`) |
 
-`domain`, `record_names`, and `interval` are only required for `ddns` mode. `totp_secret` is only required if your account has 2FA enabled.
+The API key is **not** stored in the config: it is read from the `HOVER_API_KEY`
+environment variable. With `api.enabled: true` and no key set, `serve` refuses to
+start. `totp_secret` is only required if your account has 2FA enabled.
 
 After the first login, a session file (`.hover-dns.session`) is created next to your config and reused on subsequent commands, so no re-login is needed until the session expires. Add it to `.gitignore`.
 
@@ -113,36 +130,51 @@ Record names are in the NAME column (e.g. `@`, `home`, `www`).
 | `hover-dns set <domain> <name> <value>` | Update a DNS record's value |
 | `hover-dns add <domain> <name> <type> <value>` | Add a new DNS record |
 | `hover-dns delete <record-id>` | Delete a DNS record |
-| `hover-dns ddns` | Run DDNS daemon, updating records to external IP (reads from config) |
-| `hover-dns serve` | Run the DDNS daemon and an authenticated HTTP API together (see [HTTP API](#http-api-serve-mode)) |
+| `hover-dns serve` | Run the daemon: the DDNS loop and/or the HTTP API, per config (see [HTTP API](#http-api)) |
 
 Valid record types: `A`, `AAAA`, `CNAME`, `MX`, `TXT`, `SRV`
+
+### `serve` flags
+
+`serve` runs whichever services are enabled in the config. These flags override
+the config per-invocation (handy for one-off runs without editing the file):
+
+| Flag | Description |
+|------|-------------|
+| `--ddns` | Run the DDNS loop (overrides `ddns.enabled`) |
+| `--api` | Run the HTTP API (overrides `api.enabled`) |
+| `--listen <addr>` | API listen address (overrides `api.listen`, env `HOVER_LISTEN`) |
+
+```bash
+hover-dns serve --ddns --api=false   # DDNS only this run, regardless of config
+```
 
 Global flags available on all commands:
 
 | Flag | Description |
 |------|-------------|
-| `--config <path>` | Path to config file (default: `config.json`) |
+| `--config <path>` | Path to config file (default: `config.yaml`) |
 | `-v`, `--verbose` | Verbose request/response logging |
 
 Example:
 
 ```bash
-./hover-dns --config /etc/hover-dns.json -v set example.com @ 1.2.3.4
+./hover-dns --config /etc/hover-dns.yaml -v set example.com @ 1.2.3.4
 ```
 
 ---
 
-## HTTP API (serve mode)
+## HTTP API
 
-`hover-dns serve` runs the DDNS daemon and a small HTTP API in one process,
-sharing a single authenticated Hover session. It is meant for a trusted network:
-by default it binds loopback only, and every `/v1` request must present an API key.
+When `api.enabled` is set, `hover-dns serve` runs a small HTTP API alongside the
+DDNS loop (if also enabled), sharing a single authenticated Hover session. It is
+meant for a trusted network: by default it binds loopback only, and every `/v1`
+request must present an API key.
 
 ```bash
-export HOVER_API_KEY="$(openssl rand -hex 32)"   # required; serve refuses to start without it
-hover-dns serve                                   # listens on 127.0.0.1:8088
-hover-dns serve --listen 127.0.0.1:9000           # or set HOVER_LISTEN
+export HOVER_API_KEY="$(openssl rand -hex 32)"   # required when api.enabled; serve refuses to start without it
+hover-dns serve                                   # listens on config api.listen (default 127.0.0.1:8088)
+hover-dns serve --api --listen 127.0.0.1:9000     # force-on + override the address (or set HOVER_LISTEN)
 ```
 
 ### Authentication
@@ -227,14 +259,15 @@ The Dockerfile is multi-stage and produces a minimal `scratch` image holding jus
 docker build -t hover-dns .
 
 # One-off: list records
-docker run --rm -v ./config.json:/config.json hover-dns list
+docker run --rm -v ./config.yaml:/config.yaml hover-dns list
 
 # One-off: update a record
-docker run --rm -v ./config.json:/config.json hover-dns set example.com @ 1.2.3.4
+docker run --rm -v ./config.yaml:/config.yaml hover-dns set example.com @ 1.2.3.4
 
-# Daemon: run ddns in the background
+# Daemon: run the enabled services in the background
 docker run -d --name hover-dns --restart unless-stopped \
-  -v ./config.json:/config.json hover-dns ddns
+  -e HOVER_API_KEY="$(openssl rand -hex 32)" \
+  -v ./config.yaml:/config.yaml hover-dns serve
 docker logs -f hover-dns
 ```
 
@@ -252,11 +285,10 @@ hover-dns/
 │   ├── add.go               # add subcommand
 │   ├── set.go               # set subcommand
 │   ├── delete.go            # delete subcommand
-│   ├── ddns.go              # ddns daemon subcommand
-│   └── serve.go             # serve: ddns daemon + HTTP API
+│   └── serve.go             # serve: daemon (DDNS loop and/or HTTP API)
 ├── internal/
 │   ├── hover/               # Hover client: auth, session, transport, DNS ops
-│   │   ├── config.go        # Config struct and loader
+│   │   ├── config.go        # Config struct (YAML) and loader
 │   │   ├── auth.go          # login / 2FA flow
 │   │   ├── session.go       # session cookie persistence
 │   │   ├── http.go          # HTTP transport + transparent re-login
@@ -274,7 +306,7 @@ hover-dns/
 │   │   └── auth.go
 │   └── util/
 │       └── ip.go            # external IP lookup
-├── config.example.json
+├── config.example.yaml
 └── Dockerfile
 ```
 

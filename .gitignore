@@ -1,4 +1,5 @@
 config.json
+config.yaml
 .hover-dns.session
 hover-dns
 *.bak.md

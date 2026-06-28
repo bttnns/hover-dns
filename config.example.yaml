@@ -1,0 +1,18 @@
+# Hover account credentials (shared by every service).
+username: you@example.com
+password: yourpassword
+totp_secret: YOURBASE32SECRET
+
+# Dynamic-DNS loop: keep record_names pointed at this host's external IP.
+ddns:
+  enabled: false
+  domain: example.com
+  record_names: ["@", "home"]
+  interval: 46800 # seconds (default 46800 = 13h)
+
+# Internal HTTP API for managing records. The API key is NOT stored here; it is
+# read from the HOVER_API_KEY env var. With api.enabled true and no key, the
+# daemon refuses to start.
+api:
+  enabled: false
+  listen: 127.0.0.1:8088

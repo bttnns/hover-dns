@@ -1,6 +1,6 @@
 // Package ddns runs the dynamic-DNS loop: keep configured records pointed at the
-// host's current external IP. It is driven by serve (alongside the API) and by
-// the standalone `ddns` CLI command.
+// host's current external IP. It is driven by the serve command (alongside the
+// HTTP API), gated on ddns.enabled in the config.
 package ddns
 
 import (
@@ -18,37 +18,37 @@ const defaultInterval = 46800
 // Run blocks until ctx is cancelled. It returns a non-nil error only for a fatal
 // misconfiguration; transient failures are logged and retried.
 func Run(ctx context.Context, c *hover.Client, cfg *hover.Config) error {
-	if cfg.Domain == "" {
-		return fmt.Errorf("domain required: set in config")
+	if cfg.DDNS.Domain == "" {
+		return fmt.Errorf("ddns.domain required: set in config")
 	}
-	if len(cfg.RecordNames) == 0 {
-		return fmt.Errorf("record_names required: set in config")
+	if len(cfg.DDNS.RecordNames) == 0 {
+		return fmt.Errorf("ddns.record_names required: set in config")
 	}
 
-	interval := cfg.Interval
+	interval := cfg.DDNS.Interval
 	if interval <= 0 {
 		interval = defaultInterval
 	}
 
-	log.Printf("ddns starting: domain=%s names=%v interval=%ds", cfg.Domain, cfg.RecordNames, interval)
+	log.Printf("ddns starting: domain=%s names=%v interval=%ds", cfg.DDNS.Domain, cfg.DDNS.RecordNames, interval)
 
 	// current holds live state: name -> DNSRecord (with current ID and value)
 	current := make(map[string]hover.DNSRecord)
 
 	loadRecords := func() bool {
-		records, err := c.DomainRecords(cfg.Domain)
+		records, err := c.DomainRecords(cfg.DDNS.Domain)
 		if err != nil {
 			log.Printf("error: fetch DNS records: %v", err)
 			return false
 		}
-		for _, name := range cfg.RecordNames {
-			rec := hover.FindByName(records, hover.NormalizeName(name, cfg.Domain))
+		for _, name := range cfg.DDNS.RecordNames {
+			rec := hover.FindByName(records, hover.NormalizeName(name, cfg.DDNS.Domain))
 			if rec == nil {
-				log.Printf("warning: record %q not found in %s", name, cfg.Domain)
+				log.Printf("warning: record %q not found in %s", name, cfg.DDNS.Domain)
 				continue
 			}
 			current[name] = *rec
-			log.Printf("loaded: %s.%s (%s) = %s", name, cfg.Domain, rec.ID, rec.Value)
+			log.Printf("loaded: %s.%s (%s) = %s", name, cfg.DDNS.Domain, rec.ID, rec.Value)
 		}
 		return true
 	}
@@ -71,7 +71,7 @@ func Run(ctx context.Context, c *hover.Client, cfg *hover.Config) error {
 		}
 
 		updated := 0
-		for _, name := range cfg.RecordNames {
+		for _, name := range cfg.DDNS.RecordNames {
 			rec, ok := current[name]
 			if !ok {
 				continue
@@ -79,8 +79,8 @@ func Run(ctx context.Context, c *hover.Client, cfg *hover.Config) error {
 			if rec.Value == ip {
 				continue
 			}
-			log.Printf("updating %s.%s (%s): %s -> %s", name, cfg.Domain, rec.ID, rec.Value, ip)
-			_, newRec, err := c.SetRecord(cfg.Domain, name, ip, "A")
+			log.Printf("updating %s.%s (%s): %s -> %s", name, cfg.DDNS.Domain, rec.ID, rec.Value, ip)
+			_, newRec, err := c.SetRecord(cfg.DDNS.Domain, name, ip, "A")
 			if err != nil {
 				log.Printf("error: update %s: %v", name, err)
 				continue
@@ -89,7 +89,7 @@ func Run(ctx context.Context, c *hover.Client, cfg *hover.Config) error {
 			// the returned record instead of a separate full re-fetch.
 			current[name] = *newRec
 			updated++
-			log.Printf("updated %s.%s -> %s", name, cfg.Domain, ip)
+			log.Printf("updated %s.%s -> %s", name, cfg.DDNS.Domain, ip)
 		}
 		if updated == 0 {
 			log.Printf("ip=%s all records current, sleeping %ds", ip, interval)

@@ -16,8 +16,8 @@ var verbose bool
 
 var rootCmd = &cobra.Command{
 	Use:   "hover-dns",
-	Short: "Hover DNS management CLI and DDNS daemon",
-	Long:  "Manage Hover DNS records from the command line, or run as a DDNS daemon to keep records pointed at your current external IP.",
+	Short: "Hover DNS management CLI and daemon",
+	Long:  "Manage Hover DNS records from the command line, or run `serve` as a daemon: a DDNS loop that keeps records pointed at your current external IP and/or an authenticated HTTP API, each toggled in the config.",
 }
 
 func Execute() {
@@ -42,6 +42,6 @@ func newClientFromConfig() (*hover.Client, error) {
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "config.json", "path to config file")
+	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "config.yaml", "path to config file")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose request/response logging")
 }
