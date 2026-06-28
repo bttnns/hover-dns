@@ -24,3 +24,13 @@ func FindByName(records []DNSRecord, name string) *DNSRecord {
 	}
 	return nil
 }
+
+// FindByID returns the first record with the given id, or nil.
+func FindByID(records []DNSRecord, id string) *DNSRecord {
+	for i := range records {
+		if records[i].ID == id {
+			return &records[i]
+		}
+	}
+	return nil
+}

@@ -15,7 +15,7 @@ func (c *Client) Domains() ([]HoverDomain, error) {
 		return nil, err
 	}
 	if status < 200 || status >= 300 {
-		return nil, fmt.Errorf("domains API HTTP %d", status)
+		return nil, statusError("domains API", status, "")
 	}
 	var result domainsResponse
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -33,7 +33,7 @@ func (c *Client) DNS(domainID string) ([]DNSRecord, error) {
 		return nil, err
 	}
 	if status < 200 || status >= 300 {
-		return nil, fmt.Errorf("DNS API HTTP %d for %s", status, domainID)
+		return nil, statusError(fmt.Sprintf("DNS API for %s", domainID), status, "")
 	}
 	var result dnsResponse
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -87,7 +87,7 @@ func (c *Client) FindDomain(name string) (*HoverDomain, error) {
 			return &d, nil
 		}
 	}
-	return nil, fmt.Errorf("domain %q not found", name)
+	return nil, fmt.Errorf("domain %q not found: %w", name, ErrNotFound)
 }
 
 func (c *Client) Add(domainID, name, recType, value string) error {
@@ -104,7 +104,9 @@ func (c *Client) Add(domainID, name, recType, value string) error {
 		return fmt.Errorf("create failed: %w", reqErr)
 	}
 	if status < 200 || status >= 300 {
-		var result struct{ Error string `json:"error"` }
+		var result struct {
+			Error string `json:"error"`
+		}
 		if err := json.Unmarshal(body, &result); err != nil {
 			log.Printf("warning: could not parse error response: %v", err)
 		}
@@ -112,7 +114,7 @@ func (c *Client) Add(domainID, name, recType, value string) error {
 		if msg == "" {
 			msg = string(body)
 		}
-		return fmt.Errorf("create failed (HTTP %d): %s", status, msg)
+		return statusError("create failed", status, msg)
 	}
 	return nil
 }
@@ -123,12 +125,15 @@ func (c *Client) Delete(recordID string) error {
 		return fmt.Errorf("delete failed: %w", err)
 	}
 	if status < 200 || status >= 300 {
-		return fmt.Errorf("delete failed (HTTP %d)", status)
+		return statusError("delete failed", status, "")
 	}
 	return nil
 }
 
 func (c *Client) Set(recordID, value, forceType string) error {
+	// FindRecord is a read that scans every domain's records (1+N HTTP calls).
+	// Keep it out of the write lock so a concurrent writer isn't blocked behind
+	// these round-trips.
 	rec, domainID, err := c.FindRecord(recordID)
 	if err != nil {
 		return err
@@ -142,18 +147,29 @@ func (c *Client) Set(recordID, value, forceType string) error {
 		log.Printf("converting %s from %s to %s", recordID, rec.Type, recType)
 	}
 
+	c.mu.Lock()
 	if err := c.Delete(recordID); err != nil {
+		c.mu.Unlock()
 		return err
 	}
-	if err := c.Add(domainID, rec.Name, recType, value); err != nil {
-		log.Printf("warning: add failed, retrying in %s: %v", setRetryDelay, err)
-		time.Sleep(setRetryDelay)
-		if retryErr := c.Add(domainID, rec.Name, recType, value); retryErr != nil {
-			if restoreErr := c.Add(domainID, rec.Name, rec.Type, rec.Value); restoreErr != nil {
-				return fmt.Errorf("update failed: %w; restore also failed: %v", retryErr, restoreErr)
-			}
-			return fmt.Errorf("update failed (original restored): %w", retryErr)
+	addErr := c.Add(domainID, rec.Name, recType, value)
+	c.mu.Unlock()
+	if addErr == nil {
+		return nil
+	}
+
+	// The first create failed. Back off without holding the lock (so other
+	// writers can proceed), then retry under a fresh lock.
+	log.Printf("warning: add failed, retrying in %s: %v", setRetryDelay, addErr)
+	time.Sleep(setRetryDelay)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if retryErr := c.Add(domainID, rec.Name, recType, value); retryErr != nil {
+		if restoreErr := c.Add(domainID, rec.Name, rec.Type, rec.Value); restoreErr != nil {
+			return fmt.Errorf("update failed: %w; restore also failed: %v", retryErr, restoreErr)
 		}
+		return fmt.Errorf("update failed (original restored): %w", retryErr)
 	}
 	return nil
 }

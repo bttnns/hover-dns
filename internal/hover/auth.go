@@ -1,21 +1,25 @@
 package hover
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/http/cookiejar"
 	neturl "net/url"
 	"time"
+
+	"github.com/go-resty/resty/v2"
 )
 
 func NewClient(cfg *Config, verbose bool) (*Client, error) {
 	jar, _ := cookiejar.New(nil)
+	rc := resty.New().
+		SetTimeout(15 * time.Second).
+		SetCookieJar(jar)
+
 	c := &Client{
-		http:        &http.Client{Jar: jar, Timeout: 15 * time.Second},
+		rc:          rc,
 		baseURL:     "https://www.hover.com",
 		verbose:     verbose,
 		sessionFile: cfg.SessionFile,
@@ -30,9 +34,9 @@ func NewClient(cfg *Config, verbose bool) (*Client, error) {
 			return c, nil
 		}
 		if status == 429 {
-			return nil, fmt.Errorf("rate limited (HTTP 429), please wait before retrying")
+			return nil, fmt.Errorf("rate limited (HTTP 429), please wait before retrying: %w", ErrRateLimit)
 		}
-		// session expired or rejected — fall through to full login
+		// session expired or rejected, fall through to full login
 		jar.SetCookies(u, []*http.Cookie{{Name: "hoverauth", Value: "", MaxAge: -1}})
 	}
 
@@ -45,11 +49,9 @@ func NewClient(cfg *Config, verbose bool) (*Client, error) {
 func (c *Client) login(cfg *Config) error {
 	u, _ := neturl.Parse(c.baseURL)
 
-	resp, err := c.http.Get(c.baseURL + "/signin")
-	if err != nil {
+	if _, err := c.rc.R().Get(c.baseURL + "/signin"); err != nil {
 		return fmt.Errorf("step 1: %w", err)
 	}
-	resp.Body.Close()
 
 	loginPayload, err := json.Marshal(map[string]any{
 		"username": cfg.Username,
@@ -59,24 +61,17 @@ func (c *Client) login(cfg *Config) error {
 	if err != nil {
 		return fmt.Errorf("marshaling credentials: %w", err)
 	}
-	resp, err = c.http.Post(
-		c.baseURL+"/signin/auth.json",
-		"application/json;charset=UTF-8",
-		bytes.NewBuffer(loginPayload),
-	)
+	resp, err := c.rc.R().
+		SetHeader("Content-Type", "application/json;charset=UTF-8").
+		SetBody(loginPayload).
+		Post(c.baseURL + "/signin/auth.json")
 	if err != nil {
 		return fmt.Errorf("step 2: %w", err)
 	}
-	if resp.StatusCode == 429 {
-		resp.Body.Close()
-		return fmt.Errorf("rate limited (HTTP 429), please wait before retrying")
+	if resp.StatusCode() == 429 {
+		return fmt.Errorf("rate limited (HTTP 429), please wait before retrying: %w", ErrRateLimit)
 	}
-
-	raw, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if err != nil {
-		return fmt.Errorf("reading auth response: %w", err)
-	}
+	raw := resp.Body()
 
 	var authResp struct {
 		Status string `json:"status"`
@@ -86,11 +81,9 @@ func (c *Client) login(cfg *Config) error {
 		log.Printf("warning: could not parse auth response: %v", err)
 	}
 
-	for _, cookie := range c.http.Jar.Cookies(u) {
-		if cookie.Name == "hoverauth" {
-			c.saveAuthCookie(u)
-			return nil
-		}
+	if c.hasAuthCookie(u) {
+		c.saveAuthCookie(u)
+		return nil
 	}
 
 	if authResp.Status != "need_2fa" {
@@ -113,21 +106,29 @@ func (c *Client) login(cfg *Config) error {
 	if err != nil {
 		return fmt.Errorf("marshaling 2FA code: %w", err)
 	}
-	resp, err = c.http.Post(
-		c.baseURL+"/signin/auth2.json",
-		"application/json;charset=UTF-8",
-		bytes.NewBuffer(codePayload),
-	)
+	resp, err = c.rc.R().
+		SetHeader("Content-Type", "application/json;charset=UTF-8").
+		SetBody(codePayload).
+		Post(c.baseURL + "/signin/auth2.json")
 	if err != nil {
 		return fmt.Errorf("step 3 (2FA): %w", err)
 	}
-	resp.Body.Close()
+	if resp.StatusCode() == 429 {
+		return fmt.Errorf("rate limited (HTTP 429), please wait before retrying: %w", ErrRateLimit)
+	}
 
-	for _, cookie := range c.http.Jar.Cookies(u) {
-		if cookie.Name == "hoverauth" {
-			c.saveAuthCookie(u)
-			return nil
-		}
+	if c.hasAuthCookie(u) {
+		c.saveAuthCookie(u)
+		return nil
 	}
 	return fmt.Errorf("2FA failed: no auth cookie returned")
+}
+
+func (c *Client) hasAuthCookie(u *neturl.URL) bool {
+	for _, cookie := range c.jar().Cookies(u) {
+		if cookie.Name == "hoverauth" {
+			return true
+		}
+	}
+	return false
 }

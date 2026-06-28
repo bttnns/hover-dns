@@ -2,3 +2,6 @@ config.json
 .hover-dns.session
 hover-dns
 *.bak.md
+
+# Private deployment files (Podman/Quadlet on prime), kept local, not published
+quadlet/

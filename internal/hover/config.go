@@ -8,9 +8,9 @@ import (
 )
 
 type Config struct {
-	Username   string   `json:"username"`
-	Password   string   `json:"password"`
-	TOTPSecret string   `json:"totp_secret"`
+	Username    string   `json:"username"`
+	Password    string   `json:"password"`
+	TOTPSecret  string   `json:"totp_secret"`
 	Domain      string   `json:"domain"`
 	RecordNames []string `json:"record_names"`
 	Interval    int      `json:"interval"`

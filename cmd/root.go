@@ -1,28 +1,18 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
-	"strings"
+	"os/signal"
+	"syscall"
 
-	"github.com/spf13/cobra"
 	"github.com/bttnns/hover-dns/internal/hover"
+	"github.com/spf13/cobra"
 )
 
 var cfgFile string
 var verbose bool
-
-var validRecordTypes = map[string]bool{
-	"A": true, "AAAA": true, "CNAME": true,
-	"MX": true, "TXT": true, "SRV": true,
-}
-
-func validateRecordType(t string) error {
-	if !validRecordTypes[strings.ToUpper(t)] {
-		return fmt.Errorf("invalid record type %q: must be one of A, AAAA, CNAME, MX, TXT, SRV", t)
-	}
-	return nil
-}
 
 var rootCmd = &cobra.Command{
 	Use:   "hover-dns",
@@ -35,6 +25,12 @@ func Execute() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+// notifyContext returns a context cancelled on SIGINT/SIGTERM, shared by the
+// long-running ddns and serve commands.
+func notifyContext() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 }
 
 func newClientFromConfig() (*hover.Client, error) {

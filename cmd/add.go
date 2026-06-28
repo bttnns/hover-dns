@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
-	"github.com/bttnns/hover-dns/internal/hover"
 )
 
 var addCmd = &cobra.Command{
@@ -15,21 +14,15 @@ var addCmd = &cobra.Command{
   hover-dns add example.com @ TXT "v=spf1 ~all"`,
 	Args: cobra.ExactArgs(4),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := validateRecordType(args[2]); err != nil {
-			return err
-		}
 		c, err := newClientFromConfig()
 		if err != nil {
 			return err
 		}
-		domain, err := c.FindDomain(args[0])
+		domain, rec, err := c.AddRecord(args[0], args[1], args[2], args[3])
 		if err != nil {
 			return err
 		}
-		if err := c.Add(domain.ID, hover.NormalizeName(args[1], args[0]), args[2], args[3]); err != nil {
-			return err
-		}
-		fmt.Printf("added %s %s %s -> %s\n", args[0], args[1], args[2], args[3])
+		fmt.Printf("added %s %s %s -> %s (id %s)\n", domain.DomainName, args[1], rec.Type, rec.Value, rec.ID)
 		return nil
 	},
 }

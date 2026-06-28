@@ -3,8 +3,8 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/spf13/cobra"
 	"github.com/bttnns/hover-dns/internal/util"
+	"github.com/spf13/cobra"
 )
 
 var ipCmd = &cobra.Command{

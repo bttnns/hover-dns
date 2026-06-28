@@ -1,8 +1,10 @@
 package hover
 
 import (
-	"net/http"
+	"sync"
 	"time"
+
+	"github.com/go-resty/resty/v2"
 )
 
 type HoverDomain struct {
@@ -31,11 +33,22 @@ type dnsResponse struct {
 }
 
 type Client struct {
-	http        *http.Client
+	rc          *resty.Client
 	baseURL     string
 	verbose     bool
 	sessionFile string
 	cfg         *Config
+
+	// mu serializes the write mutations (the delete+create in Set, the create in
+	// AddRecord, the delete in DeleteRecord) so the ddns loop and the API don't
+	// interleave changes against the shared session. Read-only fetches need no
+	// locking; the cookie jar is concurrency-safe on its own.
+	mu sync.Mutex
+
+	// loginMu serializes the 401 re-login path (which rewrites the session file
+	// and clears/sets the auth cookie) so concurrent callers don't stampede
+	// Hover's auth endpoint or race on the session file.
+	loginMu sync.Mutex
 }
 
 type savedSession struct {

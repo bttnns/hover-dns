@@ -2,11 +2,15 @@ package util
 
 import (
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
 	"time"
+
+	"github.com/go-resty/resty/v2"
 )
+
+// ipClient is reused across calls so the transport and connection pool survive
+// between DDNS interval checks.
+var ipClient = resty.New().SetTimeout(5 * time.Second)
 
 func ExternalIP() (string, error) {
 	services := []string{
@@ -15,18 +19,17 @@ func ExternalIP() (string, error) {
 		"https://icanhazip.com",
 		"https://checkip.amazonaws.com",
 	}
-	client := &http.Client{Timeout: 5 * time.Second}
 	for _, svc := range services {
-		resp, err := client.Get(svc)
+		resp, err := ipClient.R().Get(svc)
 		if err != nil {
 			continue
 		}
-		body, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
+		// resty does not treat non-2xx as an error, so skip error responses
+		// rather than returning an error page body as the IP.
+		if !resp.IsSuccess() {
 			continue
 		}
-		if ip := strings.TrimSpace(string(body)); ip != "" {
+		if ip := strings.TrimSpace(resp.String()); ip != "" {
 			return ip, nil
 		}
 	}

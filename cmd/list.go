@@ -5,8 +5,8 @@ import (
 	"os"
 	"text/tabwriter"
 
-	"github.com/spf13/cobra"
 	"github.com/bttnns/hover-dns/internal/hover"
+	"github.com/spf13/cobra"
 )
 
 var listCmd = &cobra.Command{

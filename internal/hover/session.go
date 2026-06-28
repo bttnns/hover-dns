@@ -26,7 +26,7 @@ func saveSession(path, value string, expires time.Time) {
 }
 
 func (c *Client) saveAuthCookie(u *neturl.URL) {
-	for _, cookie := range c.http.Jar.Cookies(u) {
+	for _, cookie := range c.jar().Cookies(u) {
 		if cookie.Name == "hoverauth" {
 			exp := cookie.Expires
 			if exp.IsZero() {
