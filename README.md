@@ -6,9 +6,9 @@ A lightweight CLI and DDNS daemon for managing DNS records on [Hover](https://ww
 
 ## What it does
 
-- **List** DNS records across all your Hover domains
-- **Set** any DNS record to a specific value
+- **Manage records** from the CLI: list, add, set, and delete records across all your Hover domains
 - **DDNS mode**: runs as a daemon, watches one or more record names, and automatically updates them to your current external IP on a configurable interval. Any non-A record (CNAME, TXT, MX, etc.) will be deleted and recreated as an A record on first update.
+- **HTTP API**: `serve` runs the DDNS daemon together with a small, key-authenticated HTTP API for listing, creating, updating, and deleting records (see [HTTP API](#http-api-serve-mode))
 - Generates TOTP codes from your 2FA secret automatically, no manual code entry
 
 ---
@@ -114,6 +114,7 @@ Record names are in the NAME column (e.g. `@`, `home`, `www`).
 | `hover-dns add <domain> <name> <type> <value>` | Add a new DNS record |
 | `hover-dns delete <record-id>` | Delete a DNS record |
 | `hover-dns ddns` | Run DDNS daemon, updating records to external IP (reads from config) |
+| `hover-dns serve` | Run the DDNS daemon and an authenticated HTTP API together (see [HTTP API](#http-api-serve-mode)) |
 
 Valid record types: `A`, `AAAA`, `CNAME`, `MX`, `TXT`, `SRV`
 
@@ -129,6 +130,80 @@ Example:
 ```bash
 ./hover-dns --config /etc/hover-dns.json -v set example.com @ 1.2.3.4
 ```
+
+---
+
+## HTTP API (serve mode)
+
+`hover-dns serve` runs the DDNS daemon and a small HTTP API in one process,
+sharing a single authenticated Hover session. It is meant for a trusted network:
+by default it binds loopback only, and every `/v1` request must present an API key.
+
+```bash
+export HOVER_API_KEY="$(openssl rand -hex 32)"   # required; serve refuses to start without it
+hover-dns serve                                   # listens on 127.0.0.1:8088
+hover-dns serve --listen 127.0.0.1:9000           # or set HOVER_LISTEN
+```
+
+### Authentication
+
+Send the key as either header. `/healthz` is public; everything under `/v1`
+returns `401` without a valid key.
+
+```
+Authorization: Bearer <key>
+X-API-Key: <key>
+```
+
+### Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/healthz` | Liveness check (no auth) |
+| `GET` | `/v1/domains` | List all domains |
+| `GET` | `/v1/domains/{domain}/records` | List records; optional `?name=` and `?type=` filters |
+| `POST` | `/v1/domains/{domain}/records` | Create a record (`{"name","type","value"}`) |
+| `PUT` | `/v1/domains/{domain}/records/{id}` | Update a record's value (and optionally `type`) |
+| `DELETE` | `/v1/domains/{domain}/records/{id}` | Delete a record |
+
+`{domain}` may be a domain name or its Hover id. Names are normalized: `@` is the
+apex, and a short name is expanded to `name.domain`.
+
+### Examples
+
+```bash
+KEY="$HOVER_API_KEY"
+BASE="http://127.0.0.1:8088"
+
+# list domains
+curl -s -H "X-API-Key: $KEY" "$BASE/v1/domains"
+
+# list A records for one domain
+curl -s -H "X-API-Key: $KEY" "$BASE/v1/domains/example.com/records?type=A"
+
+# create a record
+curl -s -H "X-API-Key: $KEY" -X POST "$BASE/v1/domains/example.com/records" \
+  -d '{"name":"www","type":"A","value":"203.0.113.10"}'
+
+# delete a record by id
+curl -s -H "X-API-Key: $KEY" -X DELETE "$BASE/v1/domains/example.com/records/<id>"
+```
+
+A record is returned as:
+
+```json
+{ "id": "dns1234567", "name": "www.example.com", "type": "A", "ttl": 900, "value": "203.0.113.10" }
+```
+
+Errors map to status codes: `400` invalid input, `401` missing/bad key, `404`
+unknown domain/record, `429` Hover rate limit, `500` otherwise.
+
+### Running behind a reverse proxy
+
+`serve` binds loopback and speaks plain HTTP; it has no TLS of its own. For
+access beyond the host, front it with a reverse proxy that terminates TLS and
+restricts access to your network. Keep the API key secret and rotate it by
+changing `HOVER_API_KEY` and restarting.
 
 ---
 
@@ -174,20 +249,29 @@ hover-dns/
 │   ├── root.go              # cobra root command, --config and -v flags
 │   ├── ip.go                # ip subcommand
 │   ├── list.go              # list subcommand
-│   ├── set.go               # set subcommand
 │   ├── add.go               # add subcommand
+│   ├── set.go               # set subcommand
 │   ├── delete.go            # delete subcommand
-│   └── ddns.go              # ddns daemon subcommand
+│   ├── ddns.go              # ddns daemon subcommand
+│   └── serve.go             # serve: ddns daemon + HTTP API
 ├── internal/
-│   ├── hover/
+│   ├── hover/               # Hover client: auth, session, transport, DNS ops
 │   │   ├── config.go        # Config struct and loader
 │   │   ├── auth.go          # login / 2FA flow
 │   │   ├── session.go       # session cookie persistence
-│   │   ├── http.go          # HTTP client
-│   │   ├── dns.go           # DNS record API calls
+│   │   ├── http.go          # HTTP transport + transparent re-login
+│   │   ├── dns.go           # low-level (id-keyed) DNS record API calls
+│   │   ├── ops.go           # high-level name-friendly operations (CLI + API)
+│   │   ├── errors.go        # sentinel errors + HTTP status mapping
 │   │   ├── totp.go          # TOTP code generation
 │   │   ├── types.go         # API types
 │   │   └── util.go          # name normalization helpers
+│   ├── ddns/
+│   │   └── ddns.go          # DDNS loop
+│   ├── api/                 # internal HTTP API (chi): server, handlers, auth
+│   │   ├── server.go
+│   │   ├── handlers.go
+│   │   └── auth.go
 │   └── util/
 │       └── ip.go            # external IP lookup
 ├── config.example.json
